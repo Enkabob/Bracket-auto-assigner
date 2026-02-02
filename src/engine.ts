@@ -1,10 +1,12 @@
 import { State } from './state';
 import { CONFIG } from './config';
 
-// Define the shape of our progress map to satisfy the TS compiler
 interface EventPriorityMap {
   id: string;
-  minRound: number;
+  name: string;
+  maxRounds: number;
+  currentMinRound: number;
+  weight: number;
 }
 
 export function processMatches(apiData: any) {
@@ -14,74 +16,117 @@ export function processMatches(apiData: any) {
   const readySets: any[] = [];
   const activeSets: any[] = [];
   const busyPlayerIds = new Set<string>();
+  const monitorStatus: any[] = []; // NEW: Tracks Pool Status
 
-  // 1. Calculate Event Priority (Explicitly typed as EventPriorityMap[])
-  const eventProgress: EventPriorityMap[] = allEvents.map((e: any) => {
-    const rounds = e.sets?.nodes?.map((s: any) => Math.abs(s.round)) || [];
-    return { 
-      id: e.id, 
-      minRound: rounds.length > 0 ? Math.min(...rounds) : 99 
-    };
+  // 1. Calculate Bottleneck Scores
+  const eventPriorityMap: EventPriorityMap[] = allEvents.map((e: any) => {
+    const sets = e.sets?.nodes || [];
+    const allRounds = sets.map((s: any) => Math.abs(s.round));
+    const maxRounds = allRounds.length > 0 ? Math.max(...allRounds) : 1;
+    const pendingRounds = sets
+      .filter((s: any) => s.state === 1 || s.state === 2 || s.state === 6)
+      .map((s: any) => Math.abs(s.round));
+    
+    const currentMinRound = pendingRounds.length > 0 ? Math.min(...pendingRounds) : maxRounds;
+    const weight = maxRounds - currentMinRound;
+
+    return { id: e.id, name: e.name, maxRounds, currentMinRound, weight };
   });
 
+  // 2. Process Events (Sets, Busy Players, and Pool Monitor)
   allEvents.forEach((event: any) => {
+    // --- BUILD POOL MONITOR ---
+    event.phases?.forEach((phase: any) => {
+      phase.phaseGroups?.nodes?.forEach((group: any) => {
+        monitorStatus.push({
+          event: event.name,
+          phase: phase.name,
+          pool: group.displayIdentifier,
+          state: group.state === 1 ? 'UNSTARTED' : group.state === 2 ? 'ACTIVE' : 'DONE'
+        });
+      });
+    });
+
+    // --- PROCESS SETS ---
     const sets = event.sets?.nodes || [];
-    
-    // Explicitly type 'p' here to fix your error
-    const eventPriority = eventProgress.find((p: EventPriorityMap) => p.id === event.id)?.minRound || 0;
+    const metrics = eventPriorityMap.find(p => p.id === event.id);
 
     sets.forEach((set: any) => {
       const p1 = set.slots?.[0]?.entrant?.name || "TBD";
       const p2 = set.slots?.[1]?.entrant?.name || "TBD";
-      const friendlyName = `${p1} vs ${p2}`;
+      const setIdStr = set.id.toString();
       
       const setInfo = { 
         ...set, 
+        id: setIdStr,
         eventName: event.name, 
-        friendlyName,
-        eventPriority 
+        friendlyName: `${p1} vs ${p2}`,
+        eventWeight: metrics?.weight || 0,
+        isPreview: setIdStr.startsWith('preview_')
       };
 
       if (set.state === 2) { // IN PROGRESS
         activeSets.push(setInfo);
-        set.slots?.forEach((s: any) => { 
-          if (s.entrant?.id) busyPlayerIds.add(s.entrant.id); 
-        });
-      } else if (set.state === 1) { // WAITING/CALLED
+        set.slots?.forEach((s: any) => { if (s.entrant?.id) busyPlayerIds.add(s.entrant.id.toString()); });
+      } 
+      else if (set.state === 1 || set.state === 6) { // WAITING OR CALLED
         readySets.push(setInfo);
+        if (set.state === 6) { // Mark called players as busy too
+           set.slots?.forEach((s: any) => { if (s.entrant?.id) busyPlayerIds.add(s.entrant.id.toString()); });
+        }
       }
     });
   });
 
-  // 2. Multi-Level Priority Sorting
+  // 3. Sorting Logic
   const sortedQueue = readySets.sort((a, b) => {
-    if (a.eventPriority !== b.eventPriority) return a.eventPriority - b.eventPriority;
+    if (b.eventWeight !== a.eventWeight) return b.eventWeight - a.eventWeight;
     if ((a.round > 0) !== (b.round > 0)) return a.round > 0 ? -1 : 1;
-    if (Math.abs(a.round) !== Math.abs(b.round)) return Math.abs(a.round) - Math.abs(b.round);
     return parseInt(a.id) - parseInt(b.id);
   });
 
-  // 3. Station Status Mapping
+  // 4. Station Status Mapping
   const stationStatus = allStations.map((s: any) => {
-    const isOffline = State.offlineStations.has(s.id);
-    const occupiedBy = activeSets.find(as => as.station?.id === s.id);
-    const calledFor = readySets.find(rs => rs.station?.id === s.id);
+    const currentId = s.id.toString();
+    const isOffline = State.offlineStations.has(currentId);
+    const occupiedBy = activeSets.find(as => as.station?.id === currentId);
+    const calledFor = readySets.find(rs => rs.station?.id === currentId);
 
     let status = "EMPTY";
     let match = "";
+    let eventName = "";
+    let startedAt = null;
 
     if (isOffline) status = "OFFLINE";
     else if (occupiedBy) {
       status = "ENGAGED";
-      match = `[${occupiedBy.eventName}] ${occupiedBy.friendlyName}`;
+      match = occupiedBy.friendlyName;
+      eventName = occupiedBy.eventName;
+      startedAt = occupiedBy.startedAt;
     } else if (calledFor) {
       status = "CALLED";
-      match = `[${calledFor.eventName}] ${calledFor.friendlyName}`;
+      match = calledFor.friendlyName;
+      eventName = calledFor.eventName;
     }
 
-    return { number: s.number, id: s.id, status, match };
+    // Calculate progress percentage
+    const isBo5 = match.toLowerCase().includes("finals");
+    const duration = isBo5 ? CONFIG.BO5_DURATION : CONFIG.BO3_DURATION;
+    const elapsed = startedAt ? (Date.now()/1000 - startedAt) : 0;
+    const percent = startedAt ? Math.min((elapsed / duration) * 100, 100) : 0;
+
+    return { 
+      number: s.number, 
+      id: currentId, 
+      status, 
+      match, 
+      eventName, 
+      percent,
+      matchId: occupiedBy?.id || calledFor?.id || null 
+    };
   });
 
+  // 5. Overtime Alerts
   const alerts: string[] = [];
   const now = Math.floor(Date.now() / 1000);
   activeSets.forEach(set => {
@@ -93,5 +138,5 @@ export function processMatches(apiData: any) {
     }
   });
 
-  return { sortedQueue, stationStatus, busyPlayerIds, alerts };
+  return { sortedQueue, stationStatus, busyPlayerIds, alerts, monitorStatus };
 }

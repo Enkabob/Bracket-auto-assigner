@@ -20,4 +20,14 @@ export class StartGGClient {
     `;
     return this.query(mutation, { setId, stationId });
   }
+  async unassignStation(setId: string) {
+  const mutation = `
+    mutation UnassignStation($setId: ID!) {
+      assignStation(setId: $setId, stationId: null) {
+        id
+      }
+    }
+  `;
+    return this.query(mutation, { setId });
+  }
 }
