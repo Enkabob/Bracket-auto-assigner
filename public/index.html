@@ -3,226 +3,360 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Start.gg Auto-Manager | Command Center</title>
+    <title>Start.gg Command Center | Regional Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500&display=swap');
-        
-        body { font-family: 'Inter', sans-serif; }
+        body { font-family: 'Inter', sans-serif; overflow-x: hidden; }
         .mono { font-family: 'JetBrains+Mono', monospace; }
 
-        /* The "Caution Tape" Stripe Effect for Offline Stations */
         .card-offline {
-            background-image: repeating-linear-gradient(
-                45deg,
-                transparent,
-                transparent 10px,
-                rgba(255, 255, 255, 0.05) 10px,
-                rgba(255, 255, 255, 0.05) 20px
-            );
+            background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(255, 255, 255, 0.05) 10px, rgba(255, 255, 255, 0.05) 20px);
         }
 
         .overtime-flash { animation: flash 1.5s infinite; }
-        @keyframes flash { 0%, 100% { border-color: #f43f5e; box-shadow: 0 0 15px rgba(244, 63, 94, 0.3); } 50% { border-color: #450a0a; box-shadow: none; } }
+        @keyframes flash { 
+            0%, 100% { border-color: #f43f5e; box-shadow: 0 0 20px rgba(244, 63, 94, 0.2); } 
+            50% { border-color: #450a0a; box-shadow: none; } 
+        }
+
+        .on-deck-glow { animation: glow 2s infinite; }
+        @keyframes glow {
+            0%, 100% { border-color: rgba(234, 179, 8, 0.3); }
+            50% { border-color: rgba(234, 179, 8, 0.8); box-shadow: 0 0 15px rgba(234, 179, 8, 0.2); }
+        }
+
+
+        /* Add a subtle fade-in for new cards */
+        #station-grid > div {
+            animation: slideIn 0.4s ease-out;
+        }
+
+        #station-grid, #queue-list, #monitor-list {
+            contain: content;
+        }
+
+        .mono {
+            font-variant-numeric: tabular-nums;
+        }
+
+        #monitor-list > div {
+            min-width: 180px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+
     </style>
 </head>
 <body class="p-8">
 
-    <!-- HEADER SECTION -->
-    <header class="flex justify-between items-start mb-10 border-b border-slate-800 pb-6">
-        <div class="flex items-center gap-6">
-            <!-- Sync Timer (Clickable) -->
-            <div onclick="forceUpdate()" class="group cursor-pointer flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-full px-5 py-2 hover:border-cyan-500 transition-all active:scale-95">
-                <div id="sync-indicator" class="w-2.5 h-2.5 bg-cyan-500 rounded-full shadow-[0_0_10px_#22d3ee]"></div>
-                <div class="text-[10px] font-black tracking-widest uppercase">
-                    NEXT SYNC: <span id="countdown-text" class="text-cyan-400 ml-1">--s</span>
-                </div>
+    <!-- SETUP WIZARD OVERLAY -->
+    <div id="setup-wizard" class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-6">
+        <div class="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl">
+            <div class="flex justify-between items-start mb-6">
+                <h2 class="text-2xl font-black text-white italic uppercase tracking-tighter">System Settings</h2>
+                <button onclick="closeSettings()" class="text-slate-500 hover:text-white">✕</button>
             </div>
             
+            <div class="space-y-4">
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase">Start.gg API Key</label>
+                    <input id="setup-api-key" type="password" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-sm focus:border-cyan-500 outline-none transition-all">
+                </div>
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase">Tournament Slug</label>
+                    <input id="setup-slug" type="text" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-sm focus:border-cyan-500 outline-none transition-all">
+                </div>
+                
+                <div class="pt-4 flex flex-col gap-3">
+                    <button onclick="saveSetup()" class="w-full bg-cyan-500 text-slate-950 font-black py-4 rounded-xl hover:bg-cyan-400 transition-all uppercase tracking-widest text-xs">
+                        Apply & Sync
+                    </button>
+                    <button onclick="clearCache()" class="w-full bg-slate-800 text-slate-400 font-bold py-3 rounded-xl hover:bg-rose-900 hover:text-white transition-all uppercase tracking-widest text-[9px]">
+                        Clear Local Cache & Timers
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HEADER SECTION -->
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 border-b border-slate-800 pb-6 gap-4">
+        <div class="flex items-center gap-6">
+            <div onclick="forceUpdate()" class="group cursor-pointer flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-full px-5 py-2 hover:border-cyan-500 transition-all active:scale-95 w-36 justify-center">
+                <div id="sync-indicator" class="w-2.5 h-2.5 bg-cyan-500 rounded-full shadow-[0_0_10px_#22d3ee] shrink-0"></div>
+                <div class="text-[10px] font-black tracking-widest uppercase flex-grow">
+                    SYNC: <span id="countdown-text" class="text-cyan-400 mono tabular-nums">--s</span>
+                </div>
+            </div>
             <div>
-                <h1 class="text-3xl font-black tracking-tighter text-white italic">AUTO-MANAGER <span class="text-cyan-500">v1.0</span></h1>
+                <h1 class="text-3xl font-black tracking-tighter text-white italic uppercase">Command <span class="text-cyan-500">Center</span></h1>
                 <p id="status-text" class="text-slate-500 text-[10px] uppercase font-black tracking-[0.2em] mt-1">Establishing Uplink...</p>
             </div>
         </div>
-
+        <!-- API Health Badge -->
+        <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5">
+            <div id="api-dot" class="w-1.5 h-1.5 rounded-full bg-green-500"></div>
+            <span class="text-[8px] font-black text-slate-500 uppercase">API Health: <span id="api-val" class="text-white">80</span></span>
+        </div>
         <div class="flex items-center gap-4">
-            <!-- Automation Master Toggle -->
-            <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1">
+            <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1.5">
                 <span class="text-[9px] font-bold opacity-40 uppercase px-2">Automation</span>
-                <button id="bot-toggle-btn" onclick="toggleBot()" class="px-4 py-1.5 rounded text-[10px] font-black transition-all">
-                    PAUSED
-                </button>
+                <button id="bot-toggle-btn" onclick="toggleBot()" class="px-4 py-1.5 rounded text-[10px] font-black transition-all">PAUSED</button>
             </div>
-
-            <!-- Nuclear Reset -->
             <button onclick="confirmReset()" class="group flex items-center gap-2 bg-rose-950/20 border border-rose-900/30 hover:bg-rose-600 hover:text-white px-5 py-2.5 rounded-lg transition-all">
-                <span class="text-[10px] font-black tracking-widest text-rose-500 group-hover:text-white uppercase">Nuclear Reset</span>
+                <span class="text-[10px] font-black text-rose-500 group-hover:text-white uppercase tracking-widest">Reset</span>
             </button>
-            
-            <div id="clock" class="text-2xl mono text-slate-700 ml-4">00:00:00</div>
+            <!-- Settings Button -->
+            <button onclick="openSettings()" class="bg-slate-900 border border-slate-800 hover:border-slate-600 p-2.5 rounded-lg transition-all group">
+                <svg class="w-5 h-5 text-slate-500 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+            </button>
+            <div id="clock" class="hidden md:block text-2xl mono text-slate-800 ml-4">00:00:00</div>
         </div>
     </header>
 
     <main class="grid grid-cols-12 gap-8">
-        
-        <!-- LEFT: STATION GRID -->
-        <div class="col-span-9">
-            <h2 class="text-sm font-black text-slate-500 uppercase tracking-[0.3em] mb-6 flex items-center">
-                <span class="w-2 h-2 bg-cyan-500 rounded-full mr-3"></span> Active Setups
+        <!-- STATION OVERVIEW -->
+        <div class="col-span-12 lg:col-span-9">
+            <h2 class="text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-6 flex items-center">
+                <span class="w-2 h-2 bg-cyan-500 rounded-full mr-3"></span> Station Deployment
             </h2>
-            <div id="station-grid" class="grid grid-cols-3 gap-6">
-                <!-- Station Cards injected here -->
+            <div id="station-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                <!-- Zones & Cards injected here -->
             </div>
         </div>
 
-        <!-- RIGHT: SIDEBAR (ALERTS & QUEUE) -->
-        <div class="col-span-3 space-y-8">
-            <!-- Overtime Alerts -->
+        <!-- SIDEBAR -->
+        <div class="col-span-12 lg:col-span-3 space-y-8">
             <section>
-                <h2 class="text-xs font-black text-rose-500 uppercase tracking-[0.3em] mb-4">Overtime Alerts</h2>
+                <h2 class="text-[10px] font-black text-rose-500 uppercase tracking-[0.3em] mb-4">Urgent Alerts</h2>
                 <div id="alert-list" class="space-y-3"></div>
             </section>
-
-            <!-- Pending Queue -->
             <section>
-                <h2 class="text-xs font-black text-cyan-500 uppercase tracking-[0.3em] mb-4">Pending Queue</h2>
-                <div id="queue-list" class="bg-slate-900/50 rounded-xl border border-slate-800 p-4 space-y-4">
-                    <!-- Queue items injected here -->
-                </div>
+                <h2 class="text-[10px] font-black text-cyan-500 uppercase tracking-[0.3em] mb-4">Live Queue</h2>
+                <div id="queue-list" class="bg-slate-900/50 rounded-2xl border border-slate-800 p-4 space-y-4 max-h-[500px] overflow-y-auto"></div>
             </section>
         </div>
 
-        <!-- BOTTOM: TOURNAMENT MONITOR -->
+        <!-- MONITOR -->
         <div class="col-span-12 mt-12 border-t border-slate-800 pt-8">
-            <h2 class="text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-6">Tournament Monitor (Phase Groups)</h2>
-            <div id="monitor-list" class="grid grid-cols-5 gap-4">
-                <!-- Pool status badges injected here -->
-            </div>
-        </div>
+            <h2 class="text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-6">Phase Group Status</h2>
+            <div id="monitor-list" class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <!-- JS looks for "monitor-list" -->
+    </div>
+</div>
     </main>
 
-    <script>
-        const socket = io();
-        let botActive = false;
-        let nextUpdateAt = Date.now();
-        let countdownInterval;
+<script>
+    const socket = io();
+    let currentData = null; // This is our local "Source of Truth"
+    let botActive = false;
+    let nextUpdateAt = Date.now();
+    let countdownInterval;
 
-        socket.on('update', (data) => {
-            // Update Header & Clock
-            document.getElementById('status-text').innerText = `Last Successful Sync: ${data.timestamp}`;
-            document.getElementById('clock').innerText = data.timestamp;
-            nextUpdateAt = data.lastUpdate + data.nextUpdateIn;
-            startCountdown();
+    // 1. DATA RECEIVER
+    socket.on('update', (data) => {
+        currentData = data;
+        botActive = data.isBotActive; // Update local bot state
+        nextUpdateAt = data.lastUpdate + data.nextUpdateIn;
+        
+        startCountdown();
+        renderUI(); // Draw everything
+    });
 
-            // Update Bot Toggle UI
-            botActive = data.isBotActive;
-            const btn = document.getElementById('bot-toggle-btn');
+    socket.on('config-status', (isConfigured) => {
+        const wizard = document.getElementById('setup-wizard');
+        if (!isConfigured) wizard.classList.remove('hidden');
+        else wizard.classList.add('hidden');
+    });
+
+    // 2. THE LOCAL TICKER (Updates every 1 second for smoothness)
+    setInterval(() => {
+        if (!currentData || !currentData.stations) return;
+
+        currentData.stations.forEach(s => {
+            if (s.status === 'ENGAGED') {
+                const isBo5 = s.match?.toLowerCase().includes("finals");
+                const increment = (1 / (isBo5 ? 1500 : 900)) * 100;
+                s.percent = Math.min(s.percent + increment, 100);
+            }
+        });
+
+        renderUI(); 
+    }, 1000);
+
+    // 3. MASTER RENDERER
+    function renderUI() {
+        if (!currentData) return;
+        const data = currentData; // Now 'data' is defined safely inside the function
+
+        // --- A. UPDATE BOT TOGGLE ---
+        const btn = document.getElementById('bot-toggle-btn');
+        if (btn) {
             btn.innerText = botActive ? 'RUNNING' : 'PAUSED';
             btn.className = botActive 
                 ? 'px-4 py-1.5 rounded text-[10px] font-black bg-cyan-500 text-slate-950 shadow-[0_0_15px_rgba(6,182,212,0.4)]' 
                 : 'px-4 py-1.5 rounded text-[10px] font-black bg-slate-800 text-slate-400';
+        }
 
-            // 1. RENDER STATIONS
-            const grid = document.getElementById('station-grid');
-            grid.innerHTML = data.stations.map(s => {
-                const isOffline = s.status === 'OFFLINE';
-                const isOvertime = data.alerts.some(a => a.includes(s.match));
-                
+        // --- B. RENDER STATIONS ---
+        const grid = document.getElementById('station-grid');
+        if (grid) {
+            const stations = data.stations || [];
+            const zones = [...new Set(stations.map(s => s.zone || 'Main Floor'))];
+            
+            grid.innerHTML = zones.map(zoneName => `
+                <div class="col-span-full mt-4 mb-2 flex items-center gap-4">
+                    <span class="text-[10px] font-black text-slate-600 uppercase tracking-widest">${zoneName}</span>
+                    <div class="h-px bg-slate-800 flex-grow"></div>
+                </div>
+                ${stations.filter(s => (s.zone || 'Main Floor') === zoneName).map(s => renderStationCard(s, data.alerts || [])).join('')}
+            `).join('');
+        }
+
+        // --- C. RENDER QUEUE ---
+        const qList = document.getElementById('queue-list');
+        if (qList) {
+            const queue = data.queue || [];
+            const playableMatches = queue.filter(q => q.isFullyReady && !q.isPreview);
+            qList.innerHTML = playableMatches.map(q => {
+                const isWinners = q.round > 0;
+                const roundLabel = isWinners ? `W${q.round}` : `L${Math.abs(q.round)}`;
                 return `
-                <div class="p-5 rounded-2xl border-2 transition-all relative overflow-hidden ${getStatusStyle(s.status)} ${isOvertime ? 'overtime-flash' : ''} ${isOffline ? 'card-offline' : ''}">
-                    ${s.eventName ? `<div class="absolute -top-0 left-6 px-3 py-1 bg-slate-800 border border-t-0 border-slate-700 rounded-b-lg text-[8px] font-black uppercase tracking-widest text-cyan-400 shadow-xl">${s.eventName}</div>` : ''}
-                    
-                    <div class="flex justify-between items-start mb-6 mt-2">
-                        <span class="text-4xl font-black italic tracking-tighter opacity-80">#${s.number}</span>
-                        <button onclick="toggleStation('${s.id}')" class="text-[9px] font-black bg-slate-800/80 hover:bg-white hover:text-black px-3 py-1.5 rounded-md border border-white/5 transition-all">
-                            ${isOffline ? 'ENABLE' : 'DISABLE'}
-                        </button>
+                <div class="text-[11px] border-l-2 border-cyan-500 pl-3 py-2 bg-cyan-500/5 mb-2 hover:bg-cyan-500/10 transition-colors">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-slate-600 font-black uppercase text-[8px] tracking-tighter">${q.eventName}</span>
+                        <span class="text-[9px] mono font-bold px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 border border-white/5">${roundLabel}</span>
                     </div>
-                    
-                    <div class="text-[10px] font-black uppercase opacity-40 mb-1 tracking-[0.2em]">${s.status}</div>
-                    <div class="text-lg font-bold h-14 overflow-hidden leading-tight text-white mb-4">${s.match || '<span class="opacity-10 italic">READY FOR MATCH</span>'}</div>
-                    
-                    <!-- Progress Section -->
-                    <div class="flex justify-between items-end">
-                         ${s.matchId && s.status !== 'EMPTY' ? `
-                            <button onclick="addTime('${s.matchId}')" class="text-[9px] font-black bg-white/5 hover:bg-cyan-500 hover:text-black px-3 py-1.5 rounded transition-all">
-                                +5m EXTEND
-                            </button>
-                        ` : '<div></div>'}
-                        <span class="text-[10px] mono opacity-40">${s.percent > 0 ? Math.floor(s.percent) + '%' : ''}</span>
-                    </div>
-
-                    <!-- Terminus Progress Bar -->
-                    <div class="absolute bottom-0 left-0 h-1.5 bg-white/5 w-full">
-                        <div class="h-full bg-cyan-500 shadow-[0_0_12px_#06b6d4] transition-all duration-1000" style="width: ${s.percent}%"></div>
-                    </div>
+                    <div class="text-slate-200 font-bold leading-tight">${q.friendlyName}</div>
                 </div>
                 `;
-            }).join('');
+            }).join('') || '<p class="text-slate-600 text-[10px] italic p-2">No playable matches ready...</p>';
+        }
 
-            // 2. RENDER QUEUE
-            const qList = document.getElementById('queue-list');
-            qList.innerHTML = data.queue.map(q => `
-                <div class="text-[11px] border-l-2 ${q.isPreview ? 'border-amber-500 bg-amber-500/5' : 'border-cyan-500'} pl-3 py-1">
-                    <div class="flex justify-between items-center mb-1">
-                        <span class="text-slate-500 font-black uppercase text-[9px] tracking-tighter">${q.eventName}</span>
-                        ${q.isPreview ? '<span class="text-[7px] bg-amber-600 text-white px-1.5 py-0.5 rounded uppercase font-black">Unstarted</span>' : ''}
+        // --- D. RENDER MONITOR (The Fix for Phase Groups) ---
+        const mList = document.getElementById('monitor-list');
+        if (mList) {
+            const monitors = data.monitorStatus || []; 
+            mList.innerHTML = monitors.map(m => `
+                <div class="bg-slate-900 border border-slate-800 p-3 rounded-xl flex justify-between items-center">
+                    <div>
+                        <div class="text-[8px] text-slate-500 font-black uppercase tracking-tighter">${m.event}</div>
+                        <div class="text-[10px] font-bold text-slate-300">${m.phase} <span class="text-cyan-600">#${m.pool}</span></div>
                     </div>
-                    <div class="${q.isPreview ? 'text-slate-500 italic' : 'text-slate-200 font-semibold'}">${q.friendlyName}</div>
+                    <span class="px-2 py-1 rounded text-[7px] font-black ${
+                        m.state === 'ACTIVE' ? 'bg-cyan-500/10 text-cyan-500 border border-cyan-500/20' : 
+                        m.state === 'UNSTARTED' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 
+                        'bg-slate-800 text-slate-600'
+                    }">${m.state}</span>
                 </div>
-            `).join('') || '<p class="text-slate-600 text-[10px] italic">No pending matches</p>';
+            `).join('') || '<p class="text-slate-700 text-[10px] italic">No active phases...</p>';
+        }
 
-            // 3. RENDER ALERTS
-            const aList = document.getElementById('alert-list');
-            aList.innerHTML = data.alerts.map(a => `
+        // --- E. RENDER ALERTS ---
+        const aList = document.getElementById('alert-list');
+        if (aList) {
+            const alerts = data.alerts || [];
+            aList.innerHTML = alerts.map(a => `
                 <div class="bg-rose-500 text-white p-3 rounded-lg text-[10px] font-black flex items-center gap-2 shadow-lg shadow-rose-900/20">
                     <span class="text-lg">⚠️</span> ${a.toUpperCase()}
                 </div>
             `).join('');
-
-            // 4. RENDER MONITOR
-            const mList = document.getElementById('monitor-list');
-            mList.innerHTML = data.monitorStatus.map(m => `
-                <div class="bg-slate-900 border border-slate-800 p-3 rounded-xl flex justify-between items-center">
-                    <div>
-                        <div class="text-[8px] text-slate-500 font-black uppercase tracking-tighter">${m.event}</div>
-                        <div class="text-[10px] font-bold text-slate-300">${m.phase} <span class="text-cyan-500 ml-1">#${m.pool}</span></div>
-                    </div>
-                    <span class="px-2 py-1 rounded text-[8px] font-black ${m.state === 'ACTIVE' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : m.state === 'UNSTARTED' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'bg-slate-800 text-slate-500'}">
-                        ${m.state}
-                    </span>
-                </div>
-            `).join('');
-        });
-
-        // UI HELPERS
-        function getStatusStyle(status) {
-            switch(status) {
-                case 'EMPTY': return 'bg-slate-900/40 border-slate-800 text-slate-500 hover:bg-slate-900 transition-colors';
-                case 'CALLED': return 'bg-yellow-500/5 border-yellow-500/20 text-yellow-500';
-                case 'ENGAGED': return 'bg-cyan-500/5 border-cyan-500/20 text-cyan-400';
-                case 'OFFLINE': return 'bg-slate-950 border-slate-900 text-slate-700 opacity-40 grayscale scale-[0.98]';
-                default: return 'bg-slate-900 border-slate-800';
+        }
+        const apiVal = document.getElementById('api-val');
+        const apiDot = document.getElementById('api-dot');
+        if (apiVal && data.apiCredits !== undefined) {
+            apiVal.innerText = data.apiCredits;
+            // Turn the dot yellow/red if we are low on credits
+            if (data.apiCredits < 20) {
+                apiDot.className = "w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse";
+            } else if (data.apiCredits < 50) {
+                apiDot.className = "w-1.5 h-1.5 rounded-full bg-amber-500";
+            } else {
+                apiDot.className = "w-1.5 h-1.5 rounded-full bg-green-500";
             }
         }
+    }
 
-        function startCountdown() {
-            if (countdownInterval) clearInterval(countdownInterval);
-            countdownInterval = setInterval(() => {
-                const remaining = Math.max(0, Math.floor((nextUpdateAt - Date.now()) / 1000));
-                document.getElementById('countdown-text').innerText = `${remaining}s`;
-                if (remaining <= 3) document.getElementById('sync-indicator').classList.add('animate-ping');
-                else document.getElementById('sync-indicator').classList.remove('animate-ping');
-            }, 1000);
+    // 4. STATION CARD COMPONENT
+    function renderStationCard(s, alerts) {
+        const isOffline = s.status === 'OFFLINE';
+        const isOvertime = alerts.some(a => a.includes(s.match) && s.match !== "");
+        const isPredictive = s.percent > 85 && s.status === 'ENGAGED';
+        
+        return `
+            <div class="p-5 rounded-2xl border-2 transition-all duration-500 relative overflow-hidden ${getStatusStyle(s.status)} ${isOvertime ? 'overtime-flash' : ''} ${isOffline ? 'card-offline' : ''} ${isPredictive ? 'on-deck-glow' : ''}">
+                ${s.eventName ? `<div class="absolute top-0 left-6 px-3 py-1 bg-slate-800 border border-t-0 border-slate-700 rounded-b-lg text-[8px] font-black uppercase tracking-widest text-cyan-400 shadow-xl z-10">${s.eventName}</div>` : ''}
+                
+                <div class="flex justify-between items-start mb-6 mt-2">
+                    <div class="flex flex-col">
+                        <span class="text-4xl font-black italic tracking-tighter opacity-80">#${s.number}</span>
+                        <span class="text-[8px] text-slate-600 font-black uppercase tracking-widest mt-1">📍 ${s.zone || 'Main'}</span>
+                    </div>
+                    <button onclick="toggleStation('${s.id}')" class="text-[9px] font-black bg-slate-800/80 hover:bg-white hover:text-black px-3 py-1.5 rounded-md border border-white/5 transition-all z-20">
+                        ${isOffline ? 'ENABLE' : 'DISABLE'}
+                    </button>
+                </div>
+                
+                <div class="text-[10px] font-black uppercase opacity-40 mb-1 tracking-[0.2em]">${s.status}</div>
+                <div class="text-lg font-bold h-14 overflow-hidden leading-tight text-white mb-4 line-clamp-2">${s.match || '<span class="opacity-10 italic">READY</span>'}</div>
+                
+                <div class="flex justify-between items-end">
+                     ${s.matchId && s.status !== 'EMPTY' ? `
+                        <button onclick="addTime('${s.matchId}')" class="text-[9px] font-black bg-white/5 hover:bg-cyan-500 hover:text-black px-3 py-1.5 rounded transition-all z-20">
+                            +5m EXTEND
+                        </button>
+                    ` : '<div></div>'}
+                    <div class="text-right">
+                        <span class="text-[11px] font-bold text-cyan-400 mono tabular-nums">${s.status === 'ENGAGED' ? (s.elapsed || 0) + 'm' : ''}</span>
+                        <span class="text-[10px] mono opacity-40 ml-1 tabular-nums">${s.percent > 0 ? Math.floor(s.percent) + '%' : ''}</span>
+                    </div>
+                </div>
+                <div class="absolute bottom-0 left-0 h-1.5 bg-white/5 w-full">
+                    <div class="h-full bg-cyan-500 shadow-[0_0_12px_#06b6d4] progress-smooth" style="width: ${s.percent}%"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    // 5. BUTTON ACTIONS & HELPERS
+    function getStatusStyle(status) {
+        switch(status) {
+            case 'EMPTY': return 'bg-slate-900/40 border-slate-800 text-slate-500 hover:bg-slate-900 transition-colors';
+            case 'CALLED': return 'bg-yellow-500/5 border-yellow-500/20 text-yellow-500';
+            case 'ENGAGED': return 'bg-cyan-500/5 border-cyan-500/20 text-cyan-400';
+            case 'OFFLINE': return 'bg-slate-950 border-slate-900 text-slate-800 opacity-40 grayscale scale-[0.98]';
+            default: return 'bg-slate-900 border-slate-800';
         }
+    }
 
-        // SOCKET EMITTERS
-        function toggleStation(id) { socket.emit('toggle-station', id); }
-        function toggleBot() { socket.emit('toggle-bot', !botActive); }
-        function confirmReset() { if(confirm("☢️ NUCLEAR RESET: Unassign ALL stations and pause bot?")) socket.emit('reset-all-called'); }
-        function addTime(setId) { socket.emit('add-timer', setId); }
-        function forceUpdate() { socket.emit('force-update'); document.getElementById('sync-indicator').classList.add('animate-spin'); }
-    </script>
+    function startCountdown() {
+        if (countdownInterval) clearInterval(countdownInterval);
+        countdownInterval = setInterval(() => {
+            const remaining = Math.max(0, Math.floor((nextUpdateAt - Date.now()) / 1000));
+            document.getElementById('countdown-text').innerText = `${remaining}s`;
+            if (remaining <= 3) document.getElementById('sync-indicator').classList.add('animate-ping');
+            else document.getElementById('sync-indicator').classList.remove('animate-ping');
+        }, 1000);
+    }
+
+    function saveSetup() {
+        const apiKey = document.getElementById('setup-api-key').value;
+        const slug = document.getElementById('setup-slug').value;
+        if (apiKey && slug) socket.emit('save-config', { apiKey, slug });
+    }
+    function toggleStation(id) { socket.emit('toggle-station', id); }
+    function toggleBot() { socket.emit('toggle-bot', !botActive); }
+    function confirmReset() { if(confirm("NUCLEAR RESET: Unassign ALL stations and pause bot?")) socket.emit('reset-all-called'); }
+    function addTime(setId) { socket.emit('add-timer', setId); }
+    function clearCache() { if (confirm("Wipe local timers and cached data?")) { socket.emit('clear-cache'); closeSettings(); } }
+    function openSettings() { document.getElementById('setup-wizard').classList.remove('hidden'); }
+    function closeSettings() { if (currentData) document.getElementById('setup-wizard').classList.add('hidden'); }
+    function forceUpdate() { socket.emit('force-update'); document.getElementById('sync-indicator').classList.add('animate-spin'); }
+</script>
 </body>
 </html>

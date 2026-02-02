@@ -20,6 +20,10 @@ const httpServer = createServer(app);
 const io = new Server(httpServer);
 
 const client = new StartGGClient(CONFIG.API_KEY);
+const recentlyCalledSets = new Set<string>();
+const recentlyCalledSetIds = new Set<string>();
+
+const stripHtml = (text: string) => text.replace(/<[^>]*>?/gm, '');
 
 // Serve the GUI files
 app.use(express.static('public'));
@@ -28,122 +32,114 @@ app.use(express.static('public'));
 // src/server.ts
 
 async function runUpdate() {
-  
   clearTimeout(updateTimer);
   
   try {
-    const data = await client.query(TOURNAMENT_QUERY, { slug: CONFIG.TOURNAMENT_SLUG });
+    // 1. Fetch
+    const data = await client.query(TOURNAMENT_QUERY, { slug: State.config.slug || CONFIG.TOURNAMENT_SLUG });
     if (!data?.tournament) return;
 
-    // This defines the variable "processed"
-    const processed = processMatches(data); 
-       lastCache = {
-      stations: processed.stationStatus,
-      queue: processed.sortedQueue.slice(0, 10),
-      alerts: processed.alerts,
-      timestamp: new Date().toLocaleTimeString(),
-      nextUpdateIn: CONFIG.POLL_INTERVAL_MS,
-      lastUpdate: Date.now(),
-      isBotActive: State.isBotActive
-    };
-    io.emit('update', lastCache);
+    // 2. Process
+    const processed = processMatches(data);
+
+    // 3. Update Cache & Last Sync Time
     lastUpdateTimestamp = Date.now();
-
-    if (State.isBotActive) {
-  console.log(`🤖 Bot checking queue: ${processed.sortedQueue.length} matches pending...`);
-  
-  let stationIdx = 0;
-  const availableStations = processed.stationStatus.filter((s: any) => s.status === 'EMPTY');
-
-  if (availableStations.length === 0) {
-    console.log("ℹ️ Bot: No empty stations available. Standing by.");
-  }
-  
-
-  for (const set of processed.sortedQueue) {
-    if (stationIdx >= availableStations.length) {
-      console.log("ℹ️ Bot: All free stations for this cycle have been filled.");
-      break;
-    }
-
-    const setId = set.id.toString();
-
-    // 1. Check for Preview IDs
-    if (setId.startsWith('preview_')) {
-      // Now it will say: ⏩ Bot: Skipping Mango vs Zain (Singles) - Bracket Not Started
-      console.log(`⏩ Bot: Skipping ${set.friendlyName} (${set.eventName}) - Bracket Not Started`);
-      continue;
-    }
-
-    // 2. Check if already has a station (prevents double-calling)
-    if (set.station) {
-      console.log(`⏩ Bot: Skipping Match ${set.friendlyName} (Already has station ${set.station.number})`);
-      continue;
-    }
-
-    // 3. Check for Player Conflicts
-    const conflict = set.slots?.find((s: any) => s.entrant?.id && processed.busyPlayerIds.has(s.entrant.id));
-    
-    if (conflict) {
-      console.log(`⏳ Bot: Conflict for ${set.friendlyName} (${conflict.entrant.name} is busy)`);
-      continue;
-    }
-
-    // 4. EXECUTE CALL
-    const target = availableStations[stationIdx];
-    console.log(`🚀 BOT CALLING: ${set.friendlyName} -> Setup ${target.number}`);
-    
-    try {
-      await client.callMatch(setId, target.id);
-      stationIdx++;
-      // Mark players busy immediately for this cycle
-      set.slots?.forEach((s: any) => { if (s.entrant?.id) processed.busyPlayerIds.add(s.entrant.id); });
-    } catch (err: any) {
-      console.error(`❌ Bot: Failed to call ${setId}:`, err.message);
-    }
-  }
-}
-
-    // 1. PUSH TO GUI
-    io.emit('update', {
+    lastCache = {
       stations: processed.stationStatus,
       queue: processed.sortedQueue.slice(0, 10),
       alerts: processed.alerts,
+      monitorStatus: processed.monitorStatus || [],
       timestamp: new Date().toLocaleTimeString(),
       nextUpdateIn: CONFIG.POLL_INTERVAL_MS,
       lastUpdate: lastUpdateTimestamp,
-      isBotActive: State.isBotActive // Ensure this is sent!
-    });
+      isBotActive: State.isBotActive,
+      isConfigured: State.config.isConfigured,
+      apiCredits: client.lastCredits
+    };
 
-    // 2. AUTOMATION LOGIC (Actual Calling)
+    // 4. Push to GUI (Single emit with everything)
+    io.emit('update', lastCache);
+
+    // 5. Automation Logic
     if (State.isBotActive) {
-      let stationIdx = 0;
-      const availableStations = processed.stationStatus.filter((s: any) => s.status === 'EMPTY');
+  const availableStations = processed.stationStatus.filter((s: any) => s.status === 'EMPTY');
+  
+  if (availableStations.length > 0 && processed.sortedQueue.length > 0) {
+    console.log(`🤖 Bot analyzing ${availableStations.length} stations and ${processed.sortedQueue.length} matches...`);
+  }
 
-      for (const set of processed.sortedQueue) {
-        if (stationIdx >= availableStations.length) break;
-        if (set.id.toString().startsWith('preview_') || set.station) continue;
+  // Create an array to hold our API promises
+  const callPromises = [];
 
-        const isConflict = set.slots?.some((s: any) => s.entrant?.id && processed.busyPlayerIds.has(s.entrant.id));
-        
-        if (!isConflict) {
-          const target = availableStations[stationIdx];
-          console.log(`🚀 [AUTO] Calling ${set.friendlyName} -> Station ${target.number}`);
-          await client.callMatch(set.id, target.id);
-          stationIdx++;
-        }
-      }
+  for (const station of availableStations) {
+    const targetMatch = processed.sortedQueue.find(q => 
+      !recentlyCalledSetIds.has(q.id) && 
+      !processed.busyPlayerIds.has(q.slots[0]?.entrant?.id?.toString()) &&
+      !processed.busyPlayerIds.has(q.slots[1]?.entrant?.id?.toString())
+    );
+
+    if (targetMatch) {
+      const cleanName = stripHtml(targetMatch.friendlyName);
+      console.log(`🚀 [QUEUED] ${cleanName} -> Station ${station.number}`);
+      
+      // Add to memory immediately to prevent the next loop iteration from picking it
+      recentlyCalledSetIds.add(targetMatch.id);
+      
+      // Push the API call to our promise array (don't 'await' yet!)
+      callPromises.push(
+        client.callMatch(targetMatch.id, station.id)
+          .then(() => console.log(`✅ [CONFIRMED] ${cleanName} on Station ${station.number}`))
+          .catch(e => {
+            recentlyCalledSetIds.delete(targetMatch.id); // Remove from memory if it failed
+            console.error(`❌ [FAILED] ${cleanName}: ${e.message}`);
+          })
+      );
+
+      // Remove from local queue so the next station doesn't pick it
+      const idx = processed.sortedQueue.indexOf(targetMatch);
+      if (idx > -1) processed.sortedQueue.splice(idx, 1);
     }
+    processed.sortedQueue.forEach(q => {
+      if (processed.busyPlayerIds.has(q.slots[0]?.entrant?.id?.toString())) {
+          // This will tell you exactly which player is holding up the queue
+          // console.log(`DEBUG: ${q.friendlyName} is blocked because ${q.slots[0].entrant.name} is busy.`);
+      }
+  });
+}
+
+  // Fire all API calls at once!
+  if (callPromises.length > 0) {
+    await Promise.all(callPromises);
+  }
+}
   } catch (e) {
     console.error("Loop Error:", e);
   } finally {
     updateTimer = setTimeout(runUpdate, CONFIG.POLL_INTERVAL_MS);
   }
 }
-
 // GUI Interactions (Buttons clicked on the web page)
 io.on('connection', (socket) => {
   console.log('CONNECTED: A TO has joined the dashboard');
+  socket.emit('config-status', State.config.isConfigured);
+
+  socket.on('save-config', (data) => {
+    State.config.apiKey = data.apiKey;
+    State.config.slug = data.slug;
+    State.config.isConfigured = true;
+    State.savePersistence();
+    
+    // Re-initialize the API client with the new key
+    // (You'll need to update your client instance here)
+    console.log("✅ Configuration Saved. Restarting Sync...");
+    runUpdate();
+  });
+
+  socket.on('set-zone', ({ stationId, zoneName }) => {
+    State.stationZones.set(stationId, zoneName);
+    State.savePersistence();
+    runUpdate();
+  });
 
   if (lastCache) {
     socket.emit('update', lastCache);
@@ -194,7 +190,9 @@ io.on('connection', (socket) => {
     State.isBotActive = false;
     
     try {
-      const data = await client.query(TOURNAMENT_QUERY, { slug: CONFIG.TOURNAMENT_SLUG });
+      const data = await client.query(TOURNAMENT_QUERY, { 
+          slug: State.config.slug || CONFIG.TOURNAMENT_SLUG 
+      });
       const allEvents = data?.tournament?.events || [];
 
       for (const event of allEvents) {
@@ -212,6 +210,37 @@ io.on('connection', (socket) => {
     } catch (err: any) {
       console.error('Reset failed:', err.message);
     }
+  });
+
+  socket.on('save-config', (data) => {
+    console.log(`🔄 Switching Tournament to: ${data.slug}`);
+    
+    // 1. Update Config
+    State.config.apiKey = data.apiKey;
+    State.config.slug = data.slug;
+    State.config.isConfigured = true;
+    State.savePersistence();
+
+    // 2. CLEAR ALL CACHES & MEMORY
+    lastCache = null;               // Wipe the GUI data
+    recentlyCalledSetIds.clear();   // Wipe the "recently called" memory
+    State.offlineStations.clear();  // Wipe disabled setups
+    State.timerExtensions.clear();  // Wipe +5m extensions
+    State.isBotActive = false;      // Pause bot for safety on new tourney
+
+    // 3. Trigger immediate fresh sync
+    runUpdate();
+    
+    // Tell the client to close the modal
+    socket.emit('config-status', true);
+  });
+
+  // A dedicated "Emergency Wipe" for the cache
+  socket.on('clear-cache', () => {
+      console.log("🧹 Manual Cache Wipe Initiated");
+      lastCache = null;
+      State.timerExtensions.clear();
+      runUpdate();
   });
 
   socket.on('force-update', () => {

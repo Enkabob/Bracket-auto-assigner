@@ -14,7 +14,7 @@ query AutoManagerData($slug: String!) {
           nodes {
             id
             displayIdentifier
-            state # 1=Created, 2=Active, 3=Completed
+            state
           }
         }
       }
@@ -25,13 +25,22 @@ query AutoManagerData($slug: String!) {
           startedAt
           round
           fullRoundText
-          slots { entrant { id name } }
+          slots {
+            entrant { id name }
+            prereqType
+            prereqId
+          }
           station { id number }
         }
       }
     }
     stations {
-      nodes { id number state }
+      nodes { 
+        id 
+        number 
+        state 
+        stream { id streamName }
+      }
     }
   }
 }
