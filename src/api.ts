@@ -1,26 +1,51 @@
 import axios from 'axios';
 
 export class StartGGClient {
-  constructor(private token: string) {}
-  public lastCredits = 80; // Tracks X-RateLimit-Remaining
+  public lastCredits = 80;
+  private token: string;
+
+  constructor(token: string) {
+    this.token = token;
+  }
+
+  // Allow the server to update the token after the Setup Wizard runs
+  setToken(newToken: string) {
+    this.token = newToken;
+  }
 
   async query(query: string, variables: any = {}) {
+    // SAFETY: If no token or no slug, don't fire the request
+    if (!this.token || !variables.slug) {
+      return null;
+    }
+
     try {
       const res = await axios.post('https://api.start.gg/gql/alpha', 
         { query, variables },
-        { headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' } }
+        { 
+          headers: { 
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json' 
+          } 
+        }
       );
 
-      // Extract Rate Limit Headers
       const remaining = res.headers['x-ratelimit-remaining'];
-      if (remaining) {
-        this.lastCredits = parseInt(remaining);
-        if (this.lastCredits < 10) console.warn(`⚠️ API WARNING: Only ${this.lastCredits} credits remaining!`);
+      if (remaining) this.lastCredits = parseInt(remaining);
+
+      if (res.data.errors) {
+        console.error("❌ GraphQL Error:", res.data.errors[0].message);
+        return null;
       }
 
       return res.data.data;
     } catch (e: any) {
-      console.error("API Error:", e.message);
+      // 400 Errors usually mean bad credentials
+      if (e.response?.status === 400) {
+        console.error("❌ API Error 400: Check your Tournament Slug and API Key.");
+      } else {
+        console.error("❌ API Error:", e.message);
+      }
       return null;
     }
   }

@@ -9,34 +9,53 @@ import { processMatches } from './engine';
 import { TOURNAMENT_QUERY } from './queries';
 import { CONFIG } from './config';
 import { State } from './state';
+import { exec } from 'node:child_process';
+
 
 let updateTimer: NodeJS.Timeout;
 let lastUpdateTimestamp = Date.now();
 let lastCache: any = null;
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer);
 
-const client = new StartGGClient(CONFIG.API_KEY);
+const client = new StartGGClient(State.config.apiKey || CONFIG.API_KEY);
 const recentlyCalledSets = new Set<string>();
 const recentlyCalledSetIds = new Set<string>();
 
 const stripHtml = (text: string) => text.replace(/<[^>]*>?/gm, '');
 
-// Serve the GUI files
-app.use(express.static('public'));
+const isExe = (process as any).pkg !== undefined;
+const publicPath = isExe 
+  ? path.join(path.dirname(process.execPath), 'public') 
+  : path.join(process.cwd(), 'public');
+
+app.use(express.static(publicPath));
 
 // The Main Loop (Modified for Web)
-// src/server.ts
 
 async function runUpdate() {
   clearTimeout(updateTimer);
   
+  // Use the State config (loaded from config.json) primarily
+  const currentSlug = State.config.slug || CONFIG.TOURNAMENT_SLUG;
+  const currentKey = State.config.apiKey || CONFIG.API_KEY;
+
+  if (!currentSlug || !currentKey) {
+    console.log("ℹ️ Waiting for configuration via Dashboard...");
+    // Update the UI to show we are unconfigured
+    io.emit('update', { isConfigured: false });
+    updateTimer = setTimeout(runUpdate, 5000); // Check again in 5s
+    return;
+  }
+
+  // Ensure the client has the latest key
+  client.setToken(currentKey);
+
   try {
+    const data = await client.query(TOURNAMENT_QUERY, { slug: currentSlug });
     // 1. Fetch
-    const data = await client.query(TOURNAMENT_QUERY, { slug: State.config.slug || CONFIG.TOURNAMENT_SLUG });
     if (!data?.tournament) return;
 
     // 2. Process
@@ -242,16 +261,41 @@ io.on('connection', (socket) => {
       State.timerExtensions.clear();
       runUpdate();
   });
-
   socket.on('force-update', () => {
     console.log('REQ: Manual Force Sync');
     runUpdate();
   });
 });
 
+function openBrowser(url: string) {
+  const platform = process.platform;
+  let command = '';
+
+  if (platform === 'win32') {
+    // start "" "url" is the most robust way to handle URLs with special characters on Windows
+    command = `start "" "${url}"`;
+  } else if (platform === 'darwin') {
+    command = `open "${url}"`;
+  } else {
+    command = `xdg-open "${url}"`;
+  }
+
+  exec(command, (error) => {
+    if (error) {
+      console.error(`Could not auto-open browser. Please go to ${url} manually.`);
+    }
+  });
+}
+
 // Start the loop
 setInterval(runUpdate, CONFIG.POLL_INTERVAL_MS);
 httpServer.listen(3000, () => {
-  console.log('✅ Dashboard running at http://localhost:3000');
+  console.log('-----------------------------------------');
+  console.log('✅ Dashboard: http://localhost:3000');
+  console.log('-----------------------------------------');
+  
+  // REMOVED the !isExe check so it opens for both dev and production
+  openBrowser('http://localhost:3000');
+  
   runUpdate();
 });
