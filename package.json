@@ -4,10 +4,11 @@
   "type": "module",
   "bin": "dist/server.js",
   "scripts": {
-  "start": "tsx src/server.ts",
-  "build": "tsc",
-  "bundle": "npm run build && esbuild src/server.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.cjs --format=cjs --define:import.meta.url=\"''\" && pkg dist/bundle.cjs --targets node18-win-x64 --output build/auto-manager.exe"
-},
+    "start": "tsx src/server.ts",
+    "build": "tsc",
+    "test": "vitest run",
+    "bundle": "npm run build && esbuild src/server.ts --bundle --platform=node --target=node18 --outfile=dist/bundle.cjs --format=cjs --define:import.meta.url=\"''\" && pkg dist/bundle.cjs --targets node18-win-x64 --output build/auto-manager.exe"
+  },
   "dependencies": {
     "axios": "^1.6.0",
     "cli-table3": "^0.6.3",
@@ -21,7 +22,8 @@
     "esbuild": "^0.27.2",
     "pkg": "^5.8.1",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
   },
   "pkg": {
     "assets": [
